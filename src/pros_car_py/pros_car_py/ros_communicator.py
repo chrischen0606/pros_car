@@ -9,13 +9,13 @@ import orjson
 from pros_car_py.ros_communicator_config import ACTION_MAPPINGS
 from geometry_msgs.msg import PointStamped
 from std_msgs.msg import String, Bool
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Float32MultiArray, Int32MultiArray
 from visualization_msgs.msg import Marker
 from nav2_msgs.srv import ClearEntireCostmap
 from rclpy.action import ActionClient
 from nav2_msgs.action import NavigateToPose
 import rclpy
-
+from nav_msgs.msg import OccupancyGrid
 
 class RosCommunicator(Node):
     def __init__(self):
@@ -67,7 +67,28 @@ class RosCommunicator(Node):
         self.subscriber_yolo_detection_status = self.create_subscription(
             Bool, "/yolo/detection/status", self.yolo_detection_status_callback, 10
         )
-
+        
+        # -------------------custum map---------------
+        self.latest_map = None
+        self.subscriber_map = self.create_subscription(
+            OccupancyGrid, '/map', self.map_callback, 10
+        )
+        
+        # -------------------camera pose--------------
+        self.car_pose = None
+        self.subscriber_pose = self.create_subscription(
+            PoseWithCovarianceStamped, '/car/pose', self.car_pose_callback, 10
+        )
+        
+        # -------------------aruco markers------------
+        self.latest_aruco_marker_list = None
+        self.subscriber_aruco_marker = self.create_subscription(
+            Int32MultiArray,
+            "/aruco",
+            self.aruco_marker_callback,
+            10,
+        )
+        
         self.latest_imu_data = None
         self.imu_sub = self.create_subscription(
             Imu, "/imu/data", self.imu_data_callback, 10
@@ -173,10 +194,21 @@ class RosCommunicator(Node):
         self.clear_plan()
         self.get_logger().info("Nav2 Reset Completed")
 
+    def map_callback(self, msg):
+        self.latest_map = msg
+    
+    def car_pose_callback(self, msg):
+        self.car_pose = msg
+        
     # amcl_pose callback and get_latest_amcl_pose
     def subscriber_amcl_callback(self, msg):
         self.latest_amcl_pose = msg
 
+    def get_aruco_estimated_car_pose(self):
+        if self.car_pose is None:
+            self.get_logger().warn('No Aruco detection results to estimate camera pose!!!!!')
+        return self.car_pose.pose.pose
+    
     def get_latest_amcl_pose(self):
         if self.latest_amcl_pose is None:
             self.get_logger().warn("No AMCL pose data received yet.")
@@ -313,6 +345,9 @@ class RosCommunicator(Node):
     def yolo_detection_status_callback(self, msg):
         self.latest_yolo_detection_status = msg
 
+    def aruco_marker_callback(self, msg):
+        self.latest_aruco_marker_list = [i for i in msg.data]
+        
     def get_latest_yolo_detection_status(self):
         if self.latest_yolo_detection_status is None:
             return None
@@ -353,3 +388,23 @@ class RosCommunicator(Node):
         marker.color.b = 0.0
 
         self.publisher_target_marker.publish(marker)
+
+    def publish_plan(self, path: list):
+        msg_path = Path()
+        msg_path.header.frame_id = "map"
+        msg_path.header.stamp = self.get_clock().now().to_msg()
+
+        for x, y in path:
+            pose = PoseStamped()
+            pose.header.frame_id = "map"
+            pose.header.stamp = self.get_clock().now().to_msg()
+
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.position.z = 0.0
+            pose.pose.orientation.w = 1.0 
+
+            msg_path.poses.append(pose)
+
+        self.publisher_plan.publish(msg_path)
+        self.get_logger().info(f"Published Path with {len(path)} points to /plan")

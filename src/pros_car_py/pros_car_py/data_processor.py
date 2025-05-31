@@ -34,6 +34,9 @@ class DataProcessor:
         else:
             return None
 
+    def get_aruco_estimate_pose(self):
+        return self.ros_communicator
+    
     def get_processed_lidar(self):
         lidar_msg = self.ros_communicator.get_latest_lidar()
         angle_min = lidar_msg.angle_min

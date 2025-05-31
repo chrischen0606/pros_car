@@ -3,7 +3,14 @@ from std_msgs.msg import String
 from pros_car_py.car_models import DeviceDataTypeEnum, CarCControl
 import threading
 import time
-
+import numpy as np
+from pros_car_py.nav2_utils import (
+    get_yaw_from_quaternion,
+    get_direction_vector,
+    get_angle_to_target,
+    calculate_angle_point,
+    cal_distance,
+)
 
 class CarController:
 
@@ -75,9 +82,12 @@ class CarController:
             self.update_action("STOP")
             time.sleep(0.1)
             return True
-
         else:
             pass
+        # position = self.ros_communicator.get_aruco_estimated_car_pose().position
+        # orientation = self.ros_communicator.get_aruco_estimated_car_pose().orientation
+        # cur_yaw = get_yaw_from_quaternion(orientation.z, orientation.w)
+        # print('cur yaw:', cur_yaw, 'position:', position)
 
     def auto_control(self, mode="manual_auto_nav", target=None, key=None):
         """
@@ -127,7 +137,12 @@ class CarController:
         """
         後台任務：不斷執行導航動作直到 stop_event 被設定。
         """
-
+        if mode == 'random_living_room_nav':
+            pose_metadata = self.ros_communicator.get_aruco_estimated_car_pose()
+            position = pose_metadata.position
+            orientation = pose_metadata.orientation
+            cur_yaw = get_yaw_from_quaternion(orientation.z, orientation.w)
+            self.nav_processing.reset_start(position, cur_yaw)
         while not stop_event.is_set():
 
             if mode == "manual_auto_nav":
@@ -154,9 +169,20 @@ class CarController:
 
             elif mode == "custom_nav":
                 action_key = self.nav_processing.camera_nav_unity()
-
+                
+            elif mode == "fix_living_room_nav":
+                action_key = self.nav_processing.fix_living_room_nav()
+                
+            elif mode == 'random_living_room_nav':
+                # print('car pose:', self.ros_communicator.get_aruco_estimated_car_pose())
+                action_key = self.nav_processing.random_living_room_nav(position, cur_yaw)
+                
+            elif mode == 'random_door_nav':
+                action_key = self.nav_processing.random_door_nav()
+                
             if self._thread_running == False:
                 action_key = "STOP"
+                
             print(action_key)
             time.sleep(0.05)
             self.ros_communicator.publish_car_control(

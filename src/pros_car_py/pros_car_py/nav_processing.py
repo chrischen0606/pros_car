@@ -6,7 +6,9 @@ from pros_car_py.nav2_utils import (
     cal_distance,
 )
 import math
-
+from pros_car_py.path_planning import PlannerRRTStar, MapLoader
+import os
+import numpy as np
 
 class Nav2Processing:
     def __init__(self, ros_communicator, data_processor):
@@ -18,7 +20,13 @@ class Nav2Processing:
         self.index_length = 0
         self.recordFlag = 0
         self.goal_published_flag = False
-
+        self.K = np.array([
+            [576.83946  , 0.0       , 319.59192 ],
+            [0.         , 577.82786 , 238.89255 ],
+            [0.         , 0.        , 1.        ]
+        ])
+        self.rst_flag = False
+        
     def reset_nav_process(self):
         self.finishFlag = False
         self.recordFlag = 0
@@ -242,7 +250,7 @@ class Nav2Processing:
             map(lambda x: x * 100.0, self.data_processor.get_camera_x_multi_depth())
         )
 
-        if camera_multi_depth == None or yolo_target_info == None:
+        if camera_multi_depth == None or yolo_target_info[0] == None:
             return "STOP"
 
         camera_forward_depth = self.filter_negative_one(camera_multi_depth[7:13])
@@ -250,7 +258,8 @@ class Nav2Processing:
         camera_right_depth = self.filter_negative_one(camera_multi_depth[13:20])
         action = "STOP"
         limit_distance = 10.0
-        print(yolo_target_info[1])
+        # print(yolo_target_info[1])
+        print(yolo_target_info)
         if all(depth > limit_distance for depth in camera_forward_depth):
             if yolo_target_info[0] == 1:
                 if yolo_target_info[2] > 200.0:
@@ -269,6 +278,95 @@ class Nav2Processing:
         elif any(depth < limit_distance for depth in camera_right_depth):
             action = "COUNTERCLOCKWISE_ROTATION"
         return action
+    
+    def fix_living_room_nav(self):
+        detection_status = self.ros_communicator.get_latest_yolo_detection_status().data
+        
+        # print(detection_status)
+        if detection_status:
+            detection_bbox = self.ros_communicator.get_latest_yolo_target_info().data
+            img_width = self.ros_communicator.latest_map.info.width
+            img_width = 640
+            center_x_min = int(img_width * 0.4)
+            center_x_max = int(img_width * 0.6)
+            x_min, y_min, x_max, y_max = detection_bbox
+            bbox_center_x = (x_min + x_max) // 2
+            if bbox_center_x < center_x_min:
+                return "COUNTERCLOCKWISE_ROTATION"  # Pikachu is on the left → turn left
+            elif bbox_center_x > center_x_max:
+                return "CLOCKWISE_ROTATION"  # Pikachu is on the right → turn right
+            else:
+                return "FORWARD"
+            
+        return "COUNTERCLOCKWISE_ROTATION"
+    def position_to_pixel(self, position):
+        """
+        position: (x, y) in meters
+        return: (u, v) in pixels
+        """
+        x, y = position
+        u = int((x - self.ros_communicator.latest_map.info.origin.position.x) / self.ros_communicator.latest_map.info.resolution)
+        v = int((y - self.ros_communicator.latest_map.info.origin.position.y) / self.ros_communicator.latest_map.info.resolution)
+
+        # v = self.height - v
+        return (u, v)
+    
+    def reset_start(self, position, cur_yaw):
+        target_pos = (1.6, 1.0)
+        dx, dy = target_pos[0] - position.x, target_pos[1] - position.y
+        distance = np.hypot(dx, dy)
+        desired_yaw = np.rad2deg(math.atan2(dy, dx))
+        angle_diff = desired_yaw - cur_yaw
+        
+        yaw_tolerance = 10.0  # degrees
+        distance_tolerance = 0.3  # meters
+        
+        if abs(angle_diff) > yaw_tolerance:
+            if angle_diff > 0:
+                return "COUNTERCLOCKWISE_ROTATION"
+            else:
+                return "CLOCKWISE_ROTATION"
+            
+        elif distance > distance_tolerance:
+            return "FORWARD"
+        else:
+            self.rst_flag = True
+            return "STOP"
+        
+    def random_living_room_nav(self, position, cur_yaw):
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.path_planner = PlannerRRTStar(MapLoader(self.ros_communicator, current_dir, 'living_room'))
+        detection_status = self.ros_communicator.get_latest_yolo_detection_status().data
+        pose_metadata = self.ros_communicator.get_aruco_estimated_car_pose()
+        position = pose_metadata.position
+        orientation = pose_metadata.orientation
+        cur_yaw = get_yaw_from_quaternion(orientation.z, orientation.w)
+        
+        if not self.rst_flag:
+            return self.reset_start(position, cur_yaw)
+
+        if detection_status:
+            detection_bbox = self.ros_communicator.get_latest_yolo_target_info().data
+            img_width = 640  # or get from self.ros_communicator.latest_map.info.width
+            center_x_min = int(img_width * 0.3)
+            center_x_max = int(img_width * 0.7)
+            x_min, y_min, x_max, y_max = detection_bbox
+            bbox_center_x = (x_min + x_max) // 2
+
+            if bbox_center_x < center_x_min:
+                return "COUNTERCLOCKWISE_ROTATION"  # Pikachu is on the left → turn left
+            elif bbox_center_x > center_x_max:
+                return "CLOCKWISE_ROTATION"  # Pikachu is on the right → turn right
+            else:
+                return "FORWARD"  # Pikachu is in front → move forward
+        else:
+            return "COUNTERCLOCKWISE_ROTATION"
+    
+    def random_door_nav(self):
+        print(self.ros_communicator.latest_aruco_marker_list)
+        detected_markers = self.ros_communicator.latest_aruco_marker_list
+        
+        return "STOP"
 
     def stop_nav(self):
         return "STOP"
