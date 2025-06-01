@@ -123,6 +123,7 @@ class CarController:
                 args=(self._stop_event, mode, target),
                 daemon=True,
             )
+            self.nav_processing.rst_flag = False
             self._auto_nav_thread.start()
             self._thread_running = True
 
@@ -142,7 +143,7 @@ class CarController:
             position = pose_metadata.position
             orientation = pose_metadata.orientation
             cur_yaw = get_yaw_from_quaternion(orientation.z, orientation.w)
-            self.nav_processing.reset_start(position, cur_yaw)
+            # self.nav_processing.reset_start(position, cur_yaw)
         while not stop_event.is_set():
 
             if mode == "manual_auto_nav":
@@ -175,7 +176,15 @@ class CarController:
                 
             elif mode == 'random_living_room_nav':
                 # print('car pose:', self.ros_communicator.get_aruco_estimated_car_pose())
-                action_key = self.nav_processing.random_living_room_nav(position, cur_yaw)
+                detection_status = self.ros_communicator.get_latest_yolo_detection_status().data
+                # action_key = self.nav_processing.random_living_room_nav(position, cur_yaw, detection_status)
+                # self.action_gen = self.nav_processing.random_living_room_nav(position, cur_yaw, detection_status)
+                try:
+                    action_key = self.nav_processing.random_living_room_nav(position, cur_yaw, detection_status)
+                except StopIteration:
+                    self.action_gen = None
+                    print('stop!!!!!!!!!!!!!!')
+                    action_key = "STOP"
                 
             elif mode == 'random_door_nav':
                 action_key = self.nav_processing.random_door_nav()

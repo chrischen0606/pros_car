@@ -311,16 +311,18 @@ class Nav2Processing:
         # v = self.height - v
         return (u, v)
     
-    def reset_start(self, position, cur_yaw):
-        target_pos = (1.6, 1.0)
+    def reset_start(self, position, cur_yaw, detection_status):
+        target_pos = (1.8, 1.6)
         dx, dy = target_pos[0] - position.x, target_pos[1] - position.y
         distance = np.hypot(dx, dy)
         desired_yaw = np.rad2deg(math.atan2(dy, dx))
         angle_diff = desired_yaw - cur_yaw
         
         yaw_tolerance = 10.0  # degrees
-        distance_tolerance = 0.3  # meters
+        distance_tolerance = 0.4  # meters
         
+        if detection_status:
+            self.rst_flag = True
         if abs(angle_diff) > yaw_tolerance:
             if angle_diff > 0:
                 return "COUNTERCLOCKWISE_ROTATION"
@@ -333,17 +335,16 @@ class Nav2Processing:
             self.rst_flag = True
             return "STOP"
         
-    def random_living_room_nav(self, position, cur_yaw):
+    def random_living_room_nav(self, position, cur_yaw, detection_status):
         current_dir = os.path.dirname(os.path.abspath(__file__))
         self.path_planner = PlannerRRTStar(MapLoader(self.ros_communicator, current_dir, 'living_room'))
-        detection_status = self.ros_communicator.get_latest_yolo_detection_status().data
         pose_metadata = self.ros_communicator.get_aruco_estimated_car_pose()
         position = pose_metadata.position
         orientation = pose_metadata.orientation
         cur_yaw = get_yaw_from_quaternion(orientation.z, orientation.w)
         
         if not self.rst_flag:
-            return self.reset_start(position, cur_yaw)
+            return self.reset_start(position, cur_yaw, detection_status)
 
         if detection_status:
             detection_bbox = self.ros_communicator.get_latest_yolo_target_info().data
@@ -365,7 +366,7 @@ class Nav2Processing:
     def random_door_nav(self):
         print(self.ros_communicator.latest_aruco_marker_list)
         detected_markers = self.ros_communicator.latest_aruco_marker_list
-        
+        # if 
         return "STOP"
 
     def stop_nav(self):
