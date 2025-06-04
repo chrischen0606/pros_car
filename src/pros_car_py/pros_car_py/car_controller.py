@@ -11,6 +11,7 @@ from pros_car_py.nav2_utils import (
     calculate_angle_point,
     cal_distance,
 )
+from pros_car_py.detector import group_parallel_lines
 
 class CarController:
 
@@ -33,6 +34,7 @@ class CarController:
             [0.004709751367064641, -0.43933601070552486],
             [3.202388878639925, 3.893176401328583],
         ]
+        self.action_gen = None
 
     def update_action(self, action_key):
         """
@@ -84,10 +86,33 @@ class CarController:
             return True
         else:
             pass
-        # position = self.ros_communicator.get_aruco_estimated_car_pose().position
-        # orientation = self.ros_communicator.get_aruco_estimated_car_pose().orientation
-        # cur_yaw = get_yaw_from_quaternion(orientation.z, orientation.w)
-        # print('cur yaw:', cur_yaw, 'position:', position)
+        wall_edges = self.ros_communicator.get_wall_edges()
+        door_edges = self.ros_communicator.get_door_edges()
+        pole_edges = self.ros_communicator.get_pole_edges()
+        # door_groups = group_parallel_lines(door_edges, spatial_eps=20, angle_eps=np.radians(10), min_samples=2)
+        cnt_wall_edges = len(wall_edges)//4 if wall_edges else 0
+        cnt_door_edges = len(door_edges)//4 if door_edges else 0
+        if cnt_wall_edges and cnt_door_edges:
+            print(self.nav_processing.check_end_close(door_edges, wall_edges))
+        # print(door_groups)
+        # print(f"[Door Check] Found {len(door_groups)} door groups.")
+        # all_groups = {
+        #     "door_edge":door_groups
+        # }
+        cnt_door_edges = cnt_wall_edges = cnt_pole_edges = 0
+        # if wall_edges:
+        #     cnt_wall_edges = len(wall_edges) / 4
+        #     print(f'wall edge count: {cnt_wall_edges}')
+        #     # print(f'wall edges: {wall_edges}')
+        # if pole_edges:
+        #     cnt_pole_edges = len(pole_edges) / 4
+        #     print(f'pole edge count: {cnt_pole_edges}')
+        #     print(f'pole edges: {pole_edges}')
+        # if door_edges:
+        #     cnt_door_edges = len(door_edges) / 4
+        #     print(f'door edge count: {cnt_door_edges}')
+        #     # print(f'door edges: {door_edges}')
+        print('')
 
     def auto_control(self, mode="manual_auto_nav", target=None, key=None):
         """
@@ -118,12 +143,15 @@ class CarController:
 
         if not self._thread_running:
             self._stop_event.clear()  # 清除之前的停止狀態
+            self.action_gen = None
+            self.nav_processing.level_state = 0
             self._auto_nav_thread = threading.Thread(
                 target=self.background_task,
                 args=(self._stop_event, mode, target),
                 daemon=True,
             )
             self.nav_processing.rst_flag = False
+            self.nav_processing.left_end_close = False
             self._auto_nav_thread.start()
             self._thread_running = True
 
@@ -145,7 +173,7 @@ class CarController:
             cur_yaw = get_yaw_from_quaternion(orientation.z, orientation.w)
             # self.nav_processing.reset_start(position, cur_yaw)
         while not stop_event.is_set():
-
+            # self.nav_processing.cnt += 1
             if mode == "manual_auto_nav":
                 action_key = (
                     self.nav_processing.get_action_from_nav2_plan_no_dynamic_p_2_p(
@@ -179,15 +207,29 @@ class CarController:
                 detection_status = self.ros_communicator.get_latest_yolo_detection_status().data
                 # action_key = self.nav_processing.random_living_room_nav(position, cur_yaw, detection_status)
                 # self.action_gen = self.nav_processing.random_living_room_nav(position, cur_yaw, detection_status)
-                try:
-                    action_key = self.nav_processing.random_living_room_nav(position, cur_yaw, detection_status)
-                except StopIteration:
-                    self.action_gen = None
-                    print('stop!!!!!!!!!!!!!!')
-                    action_key = "STOP"
+                action_key = self.nav_processing.random_living_room_nav(position, cur_yaw, detection_status)
+                # try:
+                #     action_key = next(self.action_gen)
+                # except StopIteration:
+                #     self.action_gen = None
+                #     print('stop!!!!!!!!!!!!!!')
+                #     action_key = "STOP"
                 
             elif mode == 'random_door_nav':
-                action_key = self.nav_processing.random_door_nav()
+                if self.action_gen:
+                    try:
+                        action_key = next(self.action_gen)
+                    except StopIteration:
+                        action_key = "STOP"
+                        self.action_gen = None
+                else:
+                    self.nav_processing.reset_nav_process()
+                    self.action_gen = self.nav_processing.random_door_nav()
+                    try:
+                        action_key = next(self.action_gen)
+                    except StopIteration:
+                        self.action_gen = None
+                        action_key = "STOP"
                 
             if self._thread_running == False:
                 action_key = "STOP"

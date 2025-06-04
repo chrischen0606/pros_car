@@ -9,6 +9,9 @@ import math
 from pros_car_py.path_planning import PlannerRRTStar, MapLoader
 import os
 import numpy as np
+import random
+import time
+from pros_car_py.detector import group_parallel_lines
 
 class Nav2Processing:
     def __init__(self, ros_communicator, data_processor):
@@ -26,6 +29,13 @@ class Nav2Processing:
             [0.         , 0.        , 1.        ]
         ])
         self.rst_flag = False
+        self.level = 1
+        self.left_end_close = False
+        self.right_end_close = False
+        self.level1_backward =False
+        self.level_state = 0;
+        self.cnt = 0
+        self.rotate_flag = True
         
     def reset_nav_process(self):
         self.finishFlag = False
@@ -311,6 +321,41 @@ class Nav2Processing:
         # v = self.height - v
         return (u, v)
     
+    def check_horizontal_middle(self, edge):
+        x1, y1 = edge[0], edge[1]
+        x2, y2 = edge[2], edge[3]
+        horizontal_tolerance = 2           # pixels
+        middle_band_width = 60             # horizontal "middle" band, e.g., ±30 pixels around center
+
+        # is_horizontal = abs(y1 - y2) <= horizontal_tolerance
+        # middle_x = (x1 + x2) / 2
+        # is_in_middle = abs(middle_x - 320) <= (middle_band_width / 2)
+        for i, _ in enumerate(edge[::4]):
+            x1, y1 = edge[i], edge[i+1]
+            x2, y2 = edge[i+2], edge[i+3]
+            is_horizontal = abs(y1 - y2) <= horizontal_tolerance
+            is_in_middle = 100 <= abs(x1 - x2) <= 180
+            if is_horizontal and is_in_middle:
+                return True
+        return False
+    
+    def check_hole(self, edge):
+        for x, y in edge[::2]:
+            if x == 0.0:
+                return True
+        return False
+    
+    def check_end_close(self, door_edges, wall_edges):
+        wall_x1, wall_y1 = wall_edges[0], wall_edges[1]
+        wall_x2, wall_y2 = wall_edges[2], wall_edges[3]
+        for i in range(0, len(door_edges), 2):
+            x, y = door_edges[i:i+2]
+            if abs(wall_x1 - x) <= 5 and abs(wall_y1 - y) <= 5:
+                return True
+            if abs(wall_x2 - x) <= 5 and abs(wall_y2 - y) <= 5:
+                return True
+        return False
+    
     def reset_start(self, position, cur_yaw, detection_status):
         target_pos = (1.8, 1.6)
         dx, dy = target_pos[0] - position.x, target_pos[1] - position.y
@@ -336,21 +381,15 @@ class Nav2Processing:
             return "STOP"
         
     def random_living_room_nav(self, position, cur_yaw, detection_status):
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.path_planner = PlannerRRTStar(MapLoader(self.ros_communicator, current_dir, 'living_room'))
-        pose_metadata = self.ros_communicator.get_aruco_estimated_car_pose()
-        position = pose_metadata.position
-        orientation = pose_metadata.orientation
-        cur_yaw = get_yaw_from_quaternion(orientation.z, orientation.w)
+        door_edges = self.ros_communicator.get_door_edges()
+        cnt_door_edges = len(door_edges) // 4 if door_edges else 0
         
-        if not self.rst_flag:
-            return self.reset_start(position, cur_yaw, detection_status)
-
         if detection_status:
+            print('Found Pikachu!!!')
             detection_bbox = self.ros_communicator.get_latest_yolo_target_info().data
             img_width = 640  # or get from self.ros_communicator.latest_map.info.width
-            center_x_min = int(img_width * 0.3)
-            center_x_max = int(img_width * 0.7)
+            center_x_min = int(img_width * 0.35)
+            center_x_max = int(img_width * 0.65)
             x_min, y_min, x_max, y_max = detection_bbox
             bbox_center_x = (x_min + x_max) // 2
 
@@ -358,15 +397,156 @@ class Nav2Processing:
                 return "COUNTERCLOCKWISE_ROTATION"  # Pikachu is on the left → turn left
             elif bbox_center_x > center_x_max:
                 return "CLOCKWISE_ROTATION"  # Pikachu is on the right → turn right
+            elif y_max >= 479.0:
+                return "STOP"
             else:
                 return "FORWARD"  # Pikachu is in front → move forward
         else:
-            return "COUNTERCLOCKWISE_ROTATION"
-    
+            print(self.level_state)
+            door_edges = self.ros_communicator.get_door_edges()
+            cnt_door_edges = len(door_edges) // 4 if door_edges else 0
+            pole_edges = self.ros_communicator.get_pole_edges()
+            cnt_pole_edges = len(pole_edges) // 4 if pole_edges else 0
+            match self.level_state:
+                case 0:
+                    if cnt_door_edges == 2 and cnt_pole_edges == 3:
+                        self.level_state = 1
+                    return "COUNTERCLOCKWISE_ROTATION"
+                case 1: 
+                    if door_edges[1] == 479.0 and door_edges[3] == 479 and cnt_door_edges == 1:
+                        self.level_state = 2
+                    return "CLOCKWISE_ROTATION"
+                case 2:
+                    if cnt_pole_edges == 1 and door_edges[1] == 479.0 and door_edges[3] == 479:
+                        self.level_state = 3
+                    return "FORWARD"
+                case 3:
+                    time.sleep(1.0)
+                    return "COUNTERCLOCKWISE_ROTATION"
+                
+        return "STOP"
+        
     def random_door_nav(self):
-        print(self.ros_communicator.latest_aruco_marker_list)
+        # print(self.ros_communicator.latest_aruco_marker_list)
         detected_markers = self.ros_communicator.latest_aruco_marker_list
-        # if 
+        show_state = True
+        print('Start initial position reset')
+        while True:
+            pole_edges = self.ros_communicator.get_pole_edges()
+            pt1 = pole_edges[1]
+            pt2 = pole_edges[3]
+            if pt1 < 450 and pt2 < 450:
+                if show_state:print("[Step 1] Floor detected, stop reversing.")
+                break
+            if show_state:print("[Step 1] Still no floor, continue reversing.")
+            yield 'BACKWARD'
+        yield "STOP"
+        
+        turn_side = 1
+        if show_state:print("[Step 2] Start scanning for walls and doors...")
+        while True:
+            leave_wall = False
+            if show_state:print("[Wall Search] Rotating to find wall...")
+            while True:
+                yield "COUNTERCLOCKWISE_ROTATION" if turn_side else "CLOCKWISE_ROTATION"
+                wall_edges = self.ros_communicator.get_wall_edges()
+                door_edges = self.ros_communicator.get_door_edges()
+                pole_edges = self.ros_communicator.get_pole_edges()
+                cnt_wall_edges = len(wall_edges)//4 if wall_edges else 0
+                cnt_door_edges = len(door_edges)//4 if door_edges else 0
+                if cnt_wall_edges and cnt_door_edges:
+                    if self.check_end_close(door_edges, wall_edges):
+                        turn_side *= -1
+                        
+                # if wall_edges:
+                #     if show_state:print("[Wall Search] Wall detected!")
+                #     is_detected = self.ros_communicator.get_latest_yolo_detection_status().data
+                    
+                #     if is_detected:
+                #         if show_state:
+                #             print("[Wall Search] Pikachu detected, aligning temporarily...")
+                #             detection_bbox = self.ros_communicator.get_latest_yolo_target_info().data
+                #             img_width = 640  # or get from self.ros_communicator.latest_map.info.width
+                #             center_x_min = int(img_width * 0.3)
+                #             center_x_max = int(img_width * 0.7)
+                #             x_min, y_min, x_max, y_max = detection_bbox
+                #             bbox_center_x = (x_min + x_max) // 2
+
+                #             if bbox_center_x < center_x_min:
+                #                 yield "COUNTERCLOCKWISE_ROTATION"  # Pikachu is on the left → turn left
+                #             elif bbox_center_x > center_x_max:
+                #                 yield "CLOCKWISE_ROTATION"  # Pikachu is on the right → turn right
+                #             else:
+                #                 yield "FORWARD"
+                #         if not leave_wall:
+                #             print("[Wall Search] Still hugging wall, keep rotating.")
+                #             continue
+                #         if show_state:print("[Wall Search] Left wall and found again, stop rotating.")
+                #         yield "STOP"
+                #         break
+                #     else:
+                #         leave_wall = True
+        
+            door_edges = self.ros_communicator.get_door_edges()
+            door_groups = group_parallel_lines(door_edges, spatial_eps=20, angle_eps=np.radians(10), min_samples=3)
+            if show_state:print(f"[Door Check] Found {len(door_groups)} door groups.")
+            all_groups = {
+                "door_edge":door_groups
+            }
+        # if self.level == 1:
+        #     print('STATE:', self.level_state)
+        #     if not self.level1_backward:
+        #         pt1 = pole_edges[1]
+        #         pt2 = pole_edges[3]
+        #         if pt1 < 450 and pt2 < 450:
+        #             self.level1_backward = True
+        #             return "STOP"
+        #         return 'BACKWARD'
+        #     else:
+        #         if detected_markers == [0] and cnt_wall_edges == 1 and cnt_door_edges == 2 and cnt_pole_edges == 1:
+        #             self.left_end_close = True
+        #         if self.level_state == 0:
+        #             if cnt_wall_edges == 1 and cnt_door_edges == 0 and cnt_pole_edges == 1:
+        #                 self.level_state = 1
+        #             if ( 3 in detected_markers and cnt_pole_edges == 3):
+        #                 self.level_state = 3
+        #                 self.door_pass = 1
+        #             if (5 in detected_markers and cnt_pole_edges == 3):
+        #                 self.level_state = 3
+        #                 self.door_pass = 2
+        #             return "COUNTERCLOCKWISE_ROTATION"
+        #         elif self.level_state == 1:
+        #             if wall_edges[1] == 479.0 and wall_edges[3] == 479.0:
+        #                 self.level_state = 2
+        #             return "FORWARD"
+        #         elif self.level_state == 2:
+        #             if cnt_pole_edges >= 1 and cnt_wall_edges == 1 and cnt_door_edges == 1 and not self.left_end_close:
+        #                 self.door_pass = 0
+        #                 self.level_state = 3
+        #             elif self.left_end_close:
+        #                 self.door_pass = 3
+        #                 self.level_state = 5
+        #             return "CLOCKWISE_ROTATION"
+        #         elif self.level_state == 3:
+        #             for i,_ in enumerate(door_edges[::4]):
+        #                 y1, y2 = door_edges[i+1], door_edges[i+3]
+        #                 if y1 == 479.0 and y2 == 479.0:
+        #                     self.level_state = 4
+        #             # if door_edges[1] == 479.0 and door_edges[3] == 479.0:
+        #             #     self.level_state = 4
+        #             return "FORWARD"
+        #         elif self.level_state == 5:
+        #             if cnt_pole_edges == 1 and cnt_door_edges == 1:
+        #                 self.level_state = 3
+        #             return "COUNTERCLOCKWISE_ROTATION"
+        #         else:
+        #             self.level = 2
+        #             self.level_state = 0
+        #             self.rst_flag = False
+        #             self.rotate_flag = 0 if self.door_pass in [0, 1] else 1
+        #             return "STOP"
+        
+            
         return "STOP"
 
     def stop_nav(self):

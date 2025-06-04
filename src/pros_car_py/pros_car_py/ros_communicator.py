@@ -67,7 +67,7 @@ class RosCommunicator(Node):
         self.subscriber_yolo_detection_status = self.create_subscription(
             Bool, "/yolo/detection/status", self.yolo_detection_status_callback, 10
         )
-        
+        ####################################################################################
         # -------------------custum map---------------
         self.latest_map = None
         self.subscriber_map = self.create_subscription(
@@ -89,6 +89,29 @@ class RosCommunicator(Node):
             10,
         )
         
+        # -------------------wall edges--------------
+        self.wall_edges = None
+        self.subscriber_wall_edges = self.create_subscription(
+            Float32MultiArray, '/wall_edge/info', self.wall_edge_callback, 10
+        )
+        
+        # ------------------door edges----------------
+        self.door_edges = None
+        self.subscriber_door_edges = self.create_subscription(
+            Float32MultiArray, '/door_edge/info', self.door_edge_callback, 10
+        )
+        
+        # -------------------pole edges--------------
+        self.pole_edges = None
+        self.subscriber_pole_edges = self.create_subscription(
+            Float32MultiArray, '/pole_edge/info', self.pole_edge_callback, 10
+        )
+        # ------------------pole wall edge------------
+        self.wall_pole_edges = None
+        self.subscriber_wall_pole_edges = self.create_subscription(
+            Float32MultiArray, '/wall_pole_edge/info', self.wall_edge_callback, 10
+        )
+        #########################################################################
         self.latest_imu_data = None
         self.imu_sub = self.create_subscription(
             Imu, "/imu/data", self.imu_data_callback, 10
@@ -193,12 +216,39 @@ class RosCommunicator(Node):
         self.clear_received_global_plan()
         self.clear_plan()
         self.get_logger().info("Nav2 Reset Completed")
-
+        
+    # -------------custom callback-------------
     def map_callback(self, msg):
         self.latest_map = msg
     
     def car_pose_callback(self, msg):
         self.car_pose = msg
+        
+    def wall_edge_callback(self, msg):
+        self.wall_edges = msg
+    def get_wall_edges(self):
+        if self.wall_edges:
+            return self.wall_edges.data
+            
+    def door_edge_callback(self, msg):
+        self.door_edges = msg
+    def get_door_edges(self):
+        if self.door_edges:
+            return self.door_edges.data
+       
+    def pole_edge_callback(self, msg):
+        self.pole_edges = msg
+    def get_pole_edges(self):
+        if self.pole_edges:
+            return self.pole_edges.data
+        
+    def wall_pole_edge_callback(self, msg):
+        self.wall_pole_edges = msg
+    def get_wall_pole_edges(self):
+        if self.wall_pole_edges:
+            return self.wall_pole_edges.data
+        
+    # -----------------------------------------
         
     # amcl_pose callback and get_latest_amcl_pose
     def subscriber_amcl_callback(self, msg):
@@ -207,6 +257,7 @@ class RosCommunicator(Node):
     def get_aruco_estimated_car_pose(self):
         if self.car_pose is None:
             self.get_logger().warn('No Aruco detection results to estimate camera pose!!!!!')
+            return [0.0, 0.0, 0.0]
         return self.car_pose.pose.pose
     
     def get_latest_amcl_pose(self):
@@ -246,9 +297,13 @@ class RosCommunicator(Node):
 
     def publish_car_control(self, action_key, publish_rear=True, publish_front=True):
         msg = Float32MultiArray()
-        if action_key not in ACTION_MAPPINGS:
-            # print("action error")
-            return
+        if isinstance(action_key, str):
+            if action_key not in ACTION_MAPPINGS:
+                # print("action error")
+                return
+        elif isinstance(action_key, list) and len(action_key) == 4:
+            pass
+            
         velocities = ACTION_MAPPINGS[action_key]
         self._vel1, self._vel2, self._vel3, self._vel4 = velocities
         msg.data = [self._vel1, self._vel2]
