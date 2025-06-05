@@ -413,7 +413,7 @@ class Nav2Processing:
                         self.level_state = 1
                     return "COUNTERCLOCKWISE_ROTATION"
                 case 1: 
-                    if door_edges[1] == 479.0 and door_edges[3] == 479 and cnt_door_edges == 1:
+                    if (door_edges[1] == 479.0 or door_edges[3] == 479) and cnt_door_edges == 1:
                         self.level_state = 2
                     return "CLOCKWISE_ROTATION"
                 case 2:
@@ -421,9 +421,12 @@ class Nav2Processing:
                         self.level_state = 3
                     return "FORWARD"
                 case 3:
-                    time.sleep(1.0)
+                    # if detection_status:
+                    #     self.level_state = 4
+                    time.sleep(0.8)
                     return "COUNTERCLOCKWISE_ROTATION"
-                
+                case 4:
+                    return "FORWARD"
         return "STOP"
         
     def random_door_nav(self):
